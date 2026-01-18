@@ -40,14 +40,37 @@ function buildTicketEmbedSettingsModal(existing) {
     .setStyle(TextInputStyle.Short)
     .setRequired(false);
 
+  const description = new TextInputBuilder()
+    .setCustomId('description')
+    .setLabel('Embed mesajı (opsiyonel)')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false);
+
+  const image = new TextInputBuilder()
+    .setCustomId('image')
+    .setLabel('Alt banner görsel URL (Imgur vb.) (opsiyonel)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
   if (existing && existing.ticket_embed_title) {
     title.setValue(String(existing.ticket_embed_title).slice(0, 256));
   }
   if (existing && existing.ticket_embed_thumbnail_url) {
     thumbnail.setValue(String(existing.ticket_embed_thumbnail_url).slice(0, 2000));
   }
+  if (existing && existing.ticket_embed_description) {
+    description.setValue(String(existing.ticket_embed_description).slice(0, 4000));
+  }
+  if (existing && existing.ticket_embed_image_url) {
+    image.setValue(String(existing.ticket_embed_image_url).slice(0, 2000));
+  }
 
-  modal.addComponents(new ActionRowBuilder().addComponents(title), new ActionRowBuilder().addComponents(thumbnail));
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(title),
+    new ActionRowBuilder().addComponents(thumbnail),
+    new ActionRowBuilder().addComponents(description),
+    new ActionRowBuilder().addComponents(image)
+  );
   return modal;
 }
 
@@ -824,16 +847,25 @@ async function handleSetupModalSubmit({ interaction, client, db }) {
   if (interaction.customId === 'setup:ticket_embed_settings_modal') {
     const titleRaw = interaction.fields.getTextInputValue('title');
     const thumbnailRaw = interaction.fields.getTextInputValue('thumbnail');
+    const descriptionRaw = interaction.fields.getTextInputValue('description');
+    const imageRaw = interaction.fields.getTextInputValue('image');
 
     const title = titleRaw && titleRaw.trim().length > 0 ? titleRaw.trim() : null;
     const thumbnailUrl = thumbnailRaw && thumbnailRaw.trim().length > 0 ? thumbnailRaw.trim() : null;
+    const description = descriptionRaw && descriptionRaw.trim().length > 0 ? descriptionRaw : null;
+    const imageUrl = imageRaw && imageRaw.trim().length > 0 ? imageRaw.trim() : null;
 
     if (thumbnailUrl && !isValidHttpUrl(thumbnailUrl)) {
       await interaction.reply({ content: 'Görsel URL geçersiz. http/https olmalı.', ephemeral: true });
       return;
     }
 
-    db.setTicketEmbedSettings(guildId, { title, thumbnailUrl });
+    if (imageUrl && !isValidHttpUrl(imageUrl)) {
+      await interaction.reply({ content: 'Banner URL geçersiz. http/https olmalı.', ephemeral: true });
+      return;
+    }
+
+    db.setTicketEmbedSettings(guildId, { title, thumbnailUrl, description, imageUrl });
     await interaction.reply({ ...buildSetupMainMenuResponse('Embed ayarları kaydedildi.'), ephemeral: true });
     return;
   }
@@ -1115,6 +1147,12 @@ async function finalizeTicketOpenFromModal({ interaction, client, db }) {
   }
   if (guildSettings.ticket_embed_thumbnail_url && isValidHttpUrl(String(guildSettings.ticket_embed_thumbnail_url))) {
     embed.setThumbnail(String(guildSettings.ticket_embed_thumbnail_url));
+  }
+  if (guildSettings.ticket_embed_description) {
+    embed.setDescription(String(guildSettings.ticket_embed_description).slice(0, 4096));
+  }
+  if (guildSettings.ticket_embed_image_url && isValidHttpUrl(String(guildSettings.ticket_embed_image_url))) {
+    embed.setImage(String(guildSettings.ticket_embed_image_url));
   }
 
   embed.addFields({ name: 'Açılma nedeni', value: reasonText.slice(0, 1024), inline: false });

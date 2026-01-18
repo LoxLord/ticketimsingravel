@@ -26,7 +26,9 @@ function initDb(baseDir) {
       ticket_counter INTEGER NOT NULL DEFAULT 0,
       ticket_channel_naming TEXT NOT NULL DEFAULT 'number',
       ticket_embed_title TEXT,
-      ticket_embed_thumbnail_url TEXT
+      ticket_embed_thumbnail_url TEXT,
+      ticket_embed_description TEXT,
+      ticket_embed_image_url TEXT
     );
 
     CREATE TABLE IF NOT EXISTS categories (
@@ -91,6 +93,12 @@ function initDb(baseDir) {
   if (!guildColumns.includes('ticket_embed_thumbnail_url')) {
     db.exec('ALTER TABLE guild_settings ADD COLUMN ticket_embed_thumbnail_url TEXT');
   }
+  if (!guildColumns.includes('ticket_embed_description')) {
+    db.exec('ALTER TABLE guild_settings ADD COLUMN ticket_embed_description TEXT');
+  }
+  if (!guildColumns.includes('ticket_embed_image_url')) {
+    db.exec('ALTER TABLE guild_settings ADD COLUMN ticket_embed_image_url TEXT');
+  }
 
   const statements = {
     getGuild: db.prepare('SELECT * FROM guild_settings WHERE guild_id = ?'),
@@ -100,7 +108,9 @@ function initDb(baseDir) {
     setAdminRoles: db.prepare('UPDATE guild_settings SET admin_role_ids = ? WHERE guild_id = ?'),
     setPanel: db.prepare('UPDATE guild_settings SET panel_channel_id = ?, panel_message_id = ? WHERE guild_id = ?'),
     setTicketChannelNaming: db.prepare('UPDATE guild_settings SET ticket_channel_naming = ? WHERE guild_id = ?'),
-    setTicketEmbedSettings: db.prepare('UPDATE guild_settings SET ticket_embed_title = ?, ticket_embed_thumbnail_url = ? WHERE guild_id = ?'),
+    setTicketEmbedSettings: db.prepare(
+      'UPDATE guild_settings SET ticket_embed_title = ?, ticket_embed_thumbnail_url = ?, ticket_embed_description = ?, ticket_embed_image_url = ? WHERE guild_id = ?'
+    ),
 
     listCategories: db.prepare('SELECT * FROM categories WHERE guild_id = ? ORDER BY name ASC'),
     getCategory: db.prepare('SELECT * FROM categories WHERE guild_id = ? AND id = ?'),
@@ -176,9 +186,9 @@ function initDb(baseDir) {
     return getGuildSettings(guildId);
   }
 
-  function setTicketEmbedSettings(guildId, { title, thumbnailUrl }) {
+  function setTicketEmbedSettings(guildId, { title, thumbnailUrl, description, imageUrl }) {
     ensureGuild(guildId);
-    statements.setTicketEmbedSettings.run(title ?? null, thumbnailUrl ?? null, guildId);
+    statements.setTicketEmbedSettings.run(title ?? null, thumbnailUrl ?? null, description ?? null, imageUrl ?? null, guildId);
     return getGuildSettings(guildId);
   }
 
