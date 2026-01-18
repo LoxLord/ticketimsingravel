@@ -118,7 +118,7 @@ function canUseSetup({ member, guildSettings }) {
   return member.permissions.has(PermissionFlagsBits.Administrator);
 }
 
-function buildTicketPanelComponents(categories) {
+function buildTicketPanelComponents(categories, guildSettings) {
   const options = categories.map((c) => {
     const opt = {
       label: c.name,
@@ -139,7 +139,26 @@ function buildTicketPanelComponents(categories) {
 
   const row = new ActionRowBuilder().addComponents(select);
 
-  const embed = new EmbedBuilder().setDescription('Ticket oluşturmak için aşağıdan bir kategori seçiniz.');
+  const embed = new EmbedBuilder();
+
+  if (guildSettings && guildSettings.ticket_embed_title) {
+    embed.setTitle(String(guildSettings.ticket_embed_title).slice(0, 256));
+  }
+  if (
+    guildSettings &&
+    guildSettings.ticket_embed_thumbnail_url &&
+    isValidHttpUrl(String(guildSettings.ticket_embed_thumbnail_url))
+  ) {
+    embed.setThumbnail(String(guildSettings.ticket_embed_thumbnail_url));
+  }
+  if (guildSettings && guildSettings.ticket_embed_description) {
+    embed.setDescription(String(guildSettings.ticket_embed_description).slice(0, 4096));
+  } else {
+    embed.setDescription('Ticket oluşturmak için aşağıdan bir kategori seçiniz.');
+  }
+  if (guildSettings && guildSettings.ticket_embed_image_url && isValidHttpUrl(String(guildSettings.ticket_embed_image_url))) {
+    embed.setImage(String(guildSettings.ticket_embed_image_url));
+  }
 
   return { embeds: [embed], components: [row] };
 }
@@ -199,7 +218,13 @@ async function tryUpdatePanelMessage({ client, db, guildId }) {
     return;
   }
 
-  const panel = buildTicketPanelComponents(categories);
+  if (categories.length > 25) {
+    const embed = new EmbedBuilder().setDescription('Discord select menü limiti nedeniyle en fazla 25 kategori kullanılabilir.');
+    await message.edit({ embeds: [embed], components: [] }).catch(() => null);
+    return;
+  }
+
+  const panel = buildTicketPanelComponents(categories, settings);
   await message.edit(panel).catch(() => null);
 }
 
@@ -725,8 +750,30 @@ async function handleSetupChannelSelect({ interaction, client, db }) {
       return;
     }
 
-    const panel = buildTicketPanelComponents(categories);
-    const message = await channel.send(panel).catch(() => null);
+    const me = interaction.guild?.members?.me || (client.user ? await interaction.guild.members.fetch(client.user.id).catch(() => null) : null);
+    const perms = me ? channel.permissionsFor(me) : null;
+
+    const missing = [];
+    if (!perms || !perms.has(PermissionFlagsBits.ViewChannel)) missing.push('ViewChannel');
+    if (!perms || !perms.has(PermissionFlagsBits.SendMessages)) missing.push('SendMessages');
+    if (!perms || !perms.has(PermissionFlagsBits.EmbedLinks)) missing.push('EmbedLinks');
+
+    if (missing.length > 0) {
+      await interaction.update(buildSetupMainMenuResponse(`Panele mesaj gönderilemedi. Eksik izinler: ${missing.join(', ')}`));
+      return;
+    }
+
+    const settings = db.getGuildSettings(guildId);
+    const panel = buildTicketPanelComponents(categories, settings);
+
+    let message = null;
+    try {
+      message = await channel.send(panel);
+    } catch (err) {
+      const msg = err && err.message ? String(err.message).slice(0, 180) : 'Bilinmeyen hata';
+      await interaction.update(buildSetupMainMenuResponse(`Panele mesaj gönderilemedi. Hata: ${msg}`));
+      return;
+    }
     if (!message) {
       await interaction.update(buildSetupMainMenuResponse('Panele mesaj gönderilemedi.'));
       return;
@@ -866,6 +913,7 @@ async function handleSetupModalSubmit({ interaction, client, db }) {
     }
 
     db.setTicketEmbedSettings(guildId, { title, thumbnailUrl, description, imageUrl });
+    await tryUpdatePanelMessage({ client, db, guildId });
     await interaction.reply({ ...buildSetupMainMenuResponse('Embed ayarları kaydedildi.'), ephemeral: true });
     return;
   }
