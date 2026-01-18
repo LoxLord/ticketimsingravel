@@ -24,7 +24,9 @@ function initDb(baseDir) {
       panel_channel_id TEXT,
       panel_message_id TEXT,
       ticket_counter INTEGER NOT NULL DEFAULT 0,
-      ticket_channel_naming TEXT NOT NULL DEFAULT 'number'
+      ticket_channel_naming TEXT NOT NULL DEFAULT 'number',
+      ticket_embed_title TEXT,
+      ticket_embed_thumbnail_url TEXT
     );
 
     CREATE TABLE IF NOT EXISTS categories (
@@ -83,6 +85,12 @@ function initDb(baseDir) {
   if (!guildColumns.includes('ticket_channel_naming')) {
     db.exec("ALTER TABLE guild_settings ADD COLUMN ticket_channel_naming TEXT NOT NULL DEFAULT 'number'");
   }
+  if (!guildColumns.includes('ticket_embed_title')) {
+    db.exec('ALTER TABLE guild_settings ADD COLUMN ticket_embed_title TEXT');
+  }
+  if (!guildColumns.includes('ticket_embed_thumbnail_url')) {
+    db.exec('ALTER TABLE guild_settings ADD COLUMN ticket_embed_thumbnail_url TEXT');
+  }
 
   const statements = {
     getGuild: db.prepare('SELECT * FROM guild_settings WHERE guild_id = ?'),
@@ -92,6 +100,7 @@ function initDb(baseDir) {
     setAdminRoles: db.prepare('UPDATE guild_settings SET admin_role_ids = ? WHERE guild_id = ?'),
     setPanel: db.prepare('UPDATE guild_settings SET panel_channel_id = ?, panel_message_id = ? WHERE guild_id = ?'),
     setTicketChannelNaming: db.prepare('UPDATE guild_settings SET ticket_channel_naming = ? WHERE guild_id = ?'),
+    setTicketEmbedSettings: db.prepare('UPDATE guild_settings SET ticket_embed_title = ?, ticket_embed_thumbnail_url = ? WHERE guild_id = ?'),
 
     listCategories: db.prepare('SELECT * FROM categories WHERE guild_id = ? ORDER BY name ASC'),
     getCategory: db.prepare('SELECT * FROM categories WHERE guild_id = ? AND id = ?'),
@@ -164,6 +173,12 @@ function initDb(baseDir) {
   function setTicketChannelNaming(guildId, mode) {
     ensureGuild(guildId);
     statements.setTicketChannelNaming.run(mode, guildId);
+    return getGuildSettings(guildId);
+  }
+
+  function setTicketEmbedSettings(guildId, { title, thumbnailUrl }) {
+    ensureGuild(guildId);
+    statements.setTicketEmbedSettings.run(title ?? null, thumbnailUrl ?? null, guildId);
     return getGuildSettings(guildId);
   }
 
@@ -278,6 +293,7 @@ function initDb(baseDir) {
     resetAdminRoleIds,
     setPanelMessage,
     setTicketChannelNaming,
+    setTicketEmbedSettings,
     listCategories,
     getCategory,
     getCategoryRoleIds,

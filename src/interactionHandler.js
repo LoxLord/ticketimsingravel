@@ -18,10 +18,54 @@ const crypto = require('crypto');
 const pendingCategoryCreate = new Map();
 const pendingCategoryRoleUpdate = new Map();
 const pendingCategoryEdit = new Map();
+const pendingTicketOpen = new Map();
 
 function generateId() {
   if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
   return crypto.randomBytes(16).toString('hex');
+}
+
+function buildTicketEmbedSettingsModal(existing) {
+  const modal = new ModalBuilder().setCustomId('setup:ticket_embed_settings_modal').setTitle('Ticket Embed Ayarları');
+
+  const title = new TextInputBuilder()
+    .setCustomId('title')
+    .setLabel('Embed Başlığı (opsiyonel)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
+  const thumbnail = new TextInputBuilder()
+    .setCustomId('thumbnail')
+    .setLabel('Sağ üst görsel URL (opsiyonel)')
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false);
+
+  if (existing && existing.ticket_embed_title) {
+    title.setValue(String(existing.ticket_embed_title).slice(0, 256));
+  }
+  if (existing && existing.ticket_embed_thumbnail_url) {
+    thumbnail.setValue(String(existing.ticket_embed_thumbnail_url).slice(0, 2000));
+  }
+
+  modal.addComponents(new ActionRowBuilder().addComponents(title), new ActionRowBuilder().addComponents(thumbnail));
+  return modal;
+}
+
+function buildTicketOpenReasonModal({ category }) {
+  const modal = new ModalBuilder().setCustomId('ticket:open_reason').setTitle('Ticket Formu');
+
+  const reason = new TextInputBuilder()
+    .setCustomId('reason')
+    .setLabel('Açılma nedeni')
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(true);
+
+  if (category && category.form_text) {
+    reason.setPlaceholder(String(category.form_text).slice(0, 100));
+  }
+
+  modal.addComponents(new ActionRowBuilder().addComponents(reason));
+  return modal;
 }
 
 function parseJsonArray(value) {
@@ -193,8 +237,14 @@ function buildSetupMainMenuResponse(content) {
     .setEmoji('🧹')
     .setLabel('Tüm Ticketları Kapat');
 
+  const ticketEmbedSettings = new ButtonBuilder()
+    .setCustomId('setup:ticket_embed_settings')
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji('🖼️')
+    .setLabel('Embed Ayarları');
+
   const row1 = new ActionRowBuilder().addComponents(panel, adminRoles, ticketChannelSettings, addCategory, editCategory);
-  const row2 = new ActionRowBuilder().addComponents(categoryRoles, deleteCategory, listCategories, closeAllTickets);
+  const row2 = new ActionRowBuilder().addComponents(categoryRoles, deleteCategory, listCategories, ticketEmbedSettings, closeAllTickets);
 
   return {
     ...(content ? { content } : {}),
@@ -557,6 +607,20 @@ async function handleSetupButton({ interaction, client, db }) {
     return;
   }
 
+  if (id === 'setup:ticket_embed_settings') {
+    const guildId = interaction.guildId;
+    const member = interaction.member;
+    const guildSettings = db.getGuildSettings(guildId);
+
+    if (!canUseSetup({ member, guildSettings })) {
+      await interaction.reply({ content: 'Bu komutu kullanmak için yetkiniz yok.', ephemeral: true });
+      return;
+    }
+
+    await interaction.showModal(buildTicketEmbedSettingsModal(guildSettings));
+    return;
+  }
+
   await interaction.reply({ content: 'Bilinmeyen kurulum butonu.', ephemeral: true });
 }
 
@@ -695,7 +759,7 @@ async function handleSetupChannelSelect({ interaction, client, db }) {
   await interaction.update(buildSetupMainMenuResponse('Bilinmeyen kanal seçimi.'));
 }
 
-async function handleSetupModalSubmit({ interaction, db }) {
+async function handleSetupModalSubmit({ interaction, client, db }) {
   const guildId = interaction.guildId;
 
   if (interaction.customId === 'setup:category_add_modal') {
@@ -754,6 +818,28 @@ async function handleSetupModalSubmit({ interaction, db }) {
       components: [...buildCategoryParentSelectComponents('setup:category_edit_parent'), buildSetupBackRow()],
       ephemeral: true
     });
+    return;
+  }
+
+  if (interaction.customId === 'setup:ticket_embed_settings_modal') {
+    const titleRaw = interaction.fields.getTextInputValue('title');
+    const thumbnailRaw = interaction.fields.getTextInputValue('thumbnail');
+
+    const title = titleRaw && titleRaw.trim().length > 0 ? titleRaw.trim() : null;
+    const thumbnailUrl = thumbnailRaw && thumbnailRaw.trim().length > 0 ? thumbnailRaw.trim() : null;
+
+    if (thumbnailUrl && !isValidHttpUrl(thumbnailUrl)) {
+      await interaction.reply({ content: 'Görsel URL geçersiz. http/https olmalı.', ephemeral: true });
+      return;
+    }
+
+    db.setTicketEmbedSettings(guildId, { title, thumbnailUrl });
+    await interaction.reply({ ...buildSetupMainMenuResponse('Embed ayarları kaydedildi.'), ephemeral: true });
+    return;
+  }
+
+  if (interaction.customId === 'ticket:open_reason') {
+    await finalizeTicketOpenFromModal({ interaction, client, db });
     return;
   }
 
@@ -856,6 +942,15 @@ function buildTicketEmbed({ ticketNumber, categoryName, openerId, createdAtMs })
   return embed;
 }
 
+function isValidHttpUrl(value) {
+  try {
+    const u = new URL(value);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 function buildTicketPermissionOverwrites({ guildId, botUserId, openerId, categoryRoleIds, extraUserIds = [], extraRoleIds = [] }) {
   const overwrites = [];
 
@@ -929,12 +1024,50 @@ async function handleTicketPanelSelect({ interaction, client, db }) {
     return;
   }
 
+  const key = `${guildId}:${userId}`;
+  pendingTicketOpen.set(key, { categoryId });
+
+  await interaction.showModal(buildTicketOpenReasonModal({ category }));
+}
+
+async function finalizeTicketOpenFromModal({ interaction, client, db }) {
+  const guildId = interaction.guildId;
+  const userId = interaction.user.id;
+  const key = `${guildId}:${userId}`;
+  const pending = pendingTicketOpen.get(key);
+  pendingTicketOpen.delete(key);
+
+  if (!pending) {
+    await interaction.reply({ content: 'Ticket oluşturma isteği bulunamadı.', ephemeral: true });
+    return;
+  }
+
+  const existingOpen = db.getOpenTicketByUser(guildId, userId);
+  if (existingOpen) {
+    await interaction.reply({ content: 'Lütfen önce mevcut ticketinizi kapatın.', ephemeral: true });
+    return;
+  }
+
+  const category = db.getCategory(guildId, pending.categoryId);
+  if (!category) {
+    await interaction.reply({ content: 'Kategori bulunamadı.', ephemeral: true });
+    return;
+  }
+
+  const categoryRoleIds = db.getCategoryRoleIds(pending.categoryId);
+  if (categoryRoleIds.length < 1) {
+    await interaction.reply({ content: 'Bu kategori için yetkili rol bulunamadı.', ephemeral: true });
+    return;
+  }
+
+  const reasonText = interaction.fields.getTextInputValue('reason');
+
+  await interaction.deferReply({ ephemeral: true });
+
   const ticketNumber = db.nextTicketNumber(guildId);
-
   const guildSettings = db.getGuildSettings(guildId);
-  const namingMode = guildSettings.ticket_channel_naming || 'number';
 
-  const guild = interaction.guild;
+  const namingMode = guildSettings.ticket_channel_naming || 'number';
   let namePreferred = null;
   if (namingMode === 'user') {
     namePreferred = normalizeChannelName(interaction.user.username);
@@ -942,6 +1075,7 @@ async function handleTicketPanelSelect({ interaction, client, db }) {
     namePreferred = normalizeChannelName(`ticket-${ticketNumber}`);
   }
 
+  const guild = interaction.guild;
   let channel = null;
   try {
     channel = await guild.channels.create({
@@ -964,7 +1098,7 @@ async function handleTicketPanelSelect({ interaction, client, db }) {
     ticketNumber,
     userId,
     channelId: channel.id,
-    categoryId
+    categoryId: pending.categoryId
   });
 
   const mentionRoles = categoryRoleIds.map((r) => `<@&${r}>`).join(' ');
@@ -976,11 +1110,19 @@ async function handleTicketPanelSelect({ interaction, client, db }) {
     createdAtMs: Date.now()
   });
 
+  if (guildSettings.ticket_embed_title) {
+    embed.setTitle(String(guildSettings.ticket_embed_title).slice(0, 256));
+  }
+  if (guildSettings.ticket_embed_thumbnail_url && isValidHttpUrl(String(guildSettings.ticket_embed_thumbnail_url))) {
+    embed.setThumbnail(String(guildSettings.ticket_embed_thumbnail_url));
+  }
+
+  embed.addFields({ name: 'Açılma nedeni', value: reasonText.slice(0, 1024), inline: false });
+
   await channel.send({ content: mentionRoles, embeds: [embed] });
-  await channel.send({ content: category.form_text });
   await channel.send({ components: buildTicketButtonsOpen() });
 
-  await interaction.reply({ content: `Ticket oluşturuldu: <#${channel.id}>`, ephemeral: true });
+  await interaction.editReply({ content: `Ticket oluşturuldu: <#${channel.id}>` });
 }
 
 async function closeTicketFromChannel({ interaction, client, db }) {
@@ -1309,7 +1451,7 @@ async function handleInteraction({ interaction, client, db }) {
   }
 
   if (interaction.isModalSubmit()) {
-    await handleSetupModalSubmit({ interaction, db });
+    await handleSetupModalSubmit({ interaction, client, db });
     return;
   }
 
